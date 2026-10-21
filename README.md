@@ -35,6 +35,16 @@ The USDM publishes a new map every Thursday, dated the Tuesday before.
 
 The county markers, sidebar levels and landing page badge all update from the new map on their own.
 
+## Landing page slideshow
+
+The card on the landing page rotates through slides drawn from the current USDM data: the national map, a close-up of the largest D4 Exceptional area, and the tracked counties across the West. Captions update on their own each week.
+
+To add a photo slide, put the image in an `images/` folder and add an entry to the `SLIDES` list in `index.html`:
+
+```js
+{ img: 'images/reservoir.jpg', alt: 'Low water at a reservoir', title: () => 'Lake Mead, Nevada', text: () => 'Photo caption' },
+```
+
 ## Contact form
 
 Messages from the Contact Us form are emailed through [FormSubmit](https://formsubmit.co). The very first message sends a one-time activation email to the receiving address; click the link in it and later messages arrive directly. FormSubmit then offers a random alias for the address: replace the email in `CONTACT_ENDPOINT` inside `index.html` with that alias to keep the address out of the page source.

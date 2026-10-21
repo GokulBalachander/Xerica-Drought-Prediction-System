@@ -244,6 +244,19 @@ h1 em { font-style: normal; color: var(--gold-lt); }
 }
 .map-canvas { width: 100%; height: 100%; position: relative; background: #0d1e2e; }
 #heroMap { position: absolute; inset: 0; cursor: pointer; }
+.hero-media { position: relative; z-index: 2; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.hero-slide { position: absolute; inset: 0; opacity: 0; transition: opacity 0.7s ease; }
+.hero-slide.active { opacity: 1; }
+.hero-slide img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.map-badge { transition: opacity 0.35s; }
+.map-badge.swap { opacity: 0; }
+.hero-dots { display: flex; justify-content: center; gap: 4px; }
+.hero-dot { border: 0; background: none; padding: 6px 3px; cursor: pointer; }
+.hero-dot::before { content: ''; display: block; width: 8px; height: 8px; border-radius: 4px; background: rgba(255,255,255,0.25); transition: width 0.3s, background 0.3s; }
+.hero-dot:hover::before { background: rgba(255,255,255,0.45); }
+.hero-dot[aria-current="true"]::before { width: 28px; background: var(--gold-lt); }
+.hero-dot:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 6px; }
+@media (prefers-reduced-motion: reduce) { .hero-slide, .map-badge, .hero-dot::before { transition: none; } }
 #heroMap:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .map-overlay { position: absolute; inset: 0; pointer-events: none; }
 .map-badge {
@@ -778,6 +791,7 @@ footer {
       </a>
     </div>
   </div>
+  <div class="hero-media">
   <div class="hero-visual">
     <div class="map-canvas">
       <div id="heroMap" role="button" tabindex="0" aria-label="Open the Active Drought Map"></div>
@@ -791,11 +805,13 @@ footer {
         <div class="dm-row"><div class="dm-dot" style="background:#E60000"></div>D3 Extreme</div>
         <div class="dm-row"><div class="dm-dot" style="background:#730000"></div>D4 Exceptional</div>
       </div>
-      <div class="map-badge" id="heroBadge">
+      <div class="map-badge" id="heroBadge" aria-live="polite">
         <strong>U.S. Drought Monitor</strong>
         Loading…
       </div>
     </div>
+  </div>
+  <div class="hero-dots" id="heroDots" role="group" aria-label="Slides"></div>
   </div>
 </section>
 
@@ -1547,58 +1563,160 @@ footer {
   applyUSDMLevels();
   buildChips(); renderSidebar();
 
-  // ── Hero preview: static drought map of the US ───────────────────────
+  // ── Hero slideshow ───────────────────────────────────────────────────
+  // Every slide is drawn from the embedded USDM and county data. To add a photo,
+  // put it in images/ and add {img:'images/name.jpg', alt:'…', title:'…', text:'…'}
+  // to SLIDES below.
+  const STATE_FULL={AL:'Alabama',AK:'Alaska',AZ:'Arizona',AR:'Arkansas',CA:'California',CO:'Colorado',CT:'Connecticut',DE:'Delaware',FL:'Florida',GA:'Georgia',HI:'Hawaii',ID:'Idaho',IL:'Illinois',IN:'Indiana',IA:'Iowa',KS:'Kansas',KY:'Kentucky',LA:'Louisiana',ME:'Maine',MD:'Maryland',MA:'Massachusetts',MI:'Michigan',MN:'Minnesota',MS:'Mississippi',MO:'Missouri',MT:'Montana',NE:'Nebraska',NV:'Nevada',NH:'New Hampshire',NJ:'New Jersey',NM:'New Mexico',NY:'New York',NC:'North Carolina',ND:'North Dakota',OH:'Ohio',OK:'Oklahoma',OR:'Oregon',PA:'Pennsylvania',RI:'Rhode Island',SC:'South Carolina',SD:'South Dakota',TN:'Tennessee',TX:'Texas',UT:'Utah',VT:'Vermont',VA:'Virginia',WA:'Washington',WV:'West Virginia',WI:'Wisconsin',WY:'Wyoming'};
+  const SLIDE_MS=6500;
+  let heroData=null, heroIdx=0, heroTimer=null;
+
+  async function heroBase(){
+    if(heroData) return heroData;
+    const us = usTopo || await loadAtlas(); usTopo = us;
+    const all = topojson.feature(us, us.objects.states).features;
+    if(!prFeature) prFeature = all.find(f=>String(f.id)==='72') || null;
+    const states = {type:'FeatureCollection', features: all
+      .map(f=>Object.assign(f,{abbr:FIPS_TO_ABBR[String(f.id).padStart(2,'0')]||''})).filter(f=>f.abbr)};
+    const drought = loadDroughtFeatures();
+    // share of the 50 states in D1 or worse (the layers don't overlap)
+    const usArea = d3.geoArea(states);
+    const d1Area = drought.filter(f=>f.properties.DM>=1).reduce((a,f)=>a+d3.geoArea(f),0);
+    // largest single D4 area
+    let worst=null;
+    drought.filter(f=>f.properties.DM===4).forEach(f=>{
+      const polys = f.geometry.type==='MultiPolygon' ? f.geometry.coordinates : [f.geometry.coordinates];
+      polys.forEach(c=>{ const g={type:'Polygon',coordinates:c}, a=d3.geoArea(g); if(!worst||a>worst.area) worst={geo:g,area:a}; });
+    });
+    if(worst){
+      const ctr = d3.geoCentroid(worst.geo);
+      const st = states.features.find(f=>d3.geoContains(f, ctr));
+      worst.state = st ? STATE_FULL[st.abbr] : '';
+      worst.bounds = d3.geoBounds(worst.geo);
+    }
+    heroData = {us, states, drought, pctD1: Math.round(d1Area/usArea*100), worst};
+    return heroData;
+  }
+
+  function mapSVG(W, H, proj, opts){
+    const {us, states, drought} = heroData;
+    const pg = d3.geoPath().projection(proj);
+    const small = W < 520;   // phone-sized card: smaller labels and markers
+    let html = `<svg width="100%" height="100%" viewBox="0 0 ${W} ${H}" aria-hidden="true" style="display:block">`;
+    html += `<path d="${pg(states)}" fill="rgba(120,150,180,0.08)"/>`;
+    drought.forEach(f=>{ const d=pg(f); if(d) html+=`<path d="${d}" fill="${dmColors[f.properties.DM]}" fill-opacity="0.66"/>`; });
+    html += `<path d="${pg(topojson.mesh(us, us.objects.states))}" fill="none" stroke="rgba(200,220,240,0.32)" stroke-width="${opts.border||0.6}"/>`;
+    if(opts.inset){
+      const inset = prInset(pg, states.features.find(f=>f.abbr==='FL'), W, H);
+      if(inset){
+        const [[bx, by]] = inset.box;
+        html += `<rect x="${bx}" y="${by}" width="${inset.w}" height="${inset.h}" rx="4" fill="rgba(120,150,180,0.06)" stroke="rgba(200,220,240,0.3)" stroke-dasharray="3 3"/>`;
+        html += `<path d="${inset.pathGen(prFeature)}" fill="rgba(120,150,180,0.08)" stroke="rgba(200,220,240,0.32)" stroke-width="0.6"/>`;
+        drought.forEach(f=>{ const d=inset.pathGen(f); if(d) html+=`<path d="${d}" fill="${dmColors[f.properties.DM]}" fill-opacity="0.66"/>`; });
+        html += `<text x="${bx+4}" y="${by+8}" font-family="Inter,sans-serif" font-size="8" font-weight="600" letter-spacing="0.06em" fill="rgba(160,185,210,0.7)">PR</text>`;
+      }
+    }
+    if(opts.labels){
+      states.features.forEach(f=>{
+        const [x,y] = pg.centroid(f);
+        if(x>20 && x<W-20 && y>20 && y<H-20) html += `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="${small?8.5:12}" font-weight="600" letter-spacing="0.06em" fill="rgba(225,240,255,0.85)" stroke="rgba(7,17,26,0.85)" stroke-width="${small?2.2:3}" paint-order="stroke">${f.abbr}</text>`;
+      });
+    }
+    if(opts.markers){
+      COUNTY_GEO.forEach(c=>{
+        const pt = proj([c.lon, c.lat]);
+        if(pt) html += `<circle cx="${pt[0]}" cy="${pt[1]}" r="${small?Math.min(opts.markers,3):opts.markers}" fill="#0b1219" stroke="${dmColor(c.dmIdx)}" stroke-width="${opts.markers>3&&!small?2:1.4}"/>`;
+      });
+    }
+    return html + '</svg>';
+  }
+
+  // fit a lon/lat box (as corner points) into the card, leaving room for legend and caption
+  function boxProjection(W, H, [[w,s],[e,n]]){
+    // plain Albers (lower 48 only), so the Alaska and Hawaii insets stay out of zoomed views
+    return d3.geoAlbers().fitExtent([[24, 60],[W-24, H-96]], {type:'MultiPoint', coordinates:[[w,s],[e,n],[w,n],[e,s]]});
+  }
+
+  const SLIDES = [
+    { // the whole country
+      render:(W,H)=>{ const pad=Math.max(16,W*0.04); return mapSVG(W,H,d3.geoAlbersUsa().fitExtent([[pad,pad+40],[W-pad,H-pad-70]],heroData.states),{inset:true,markers:3}); },
+      title:()=>heroData.pctD1+'% of the U.S. in drought',
+      text:()=>'Moderate (D1) or worse · USDM · Valid '+USDM_VALID
+    },
+    { // closest look at the largest D4 area
+      skip:()=>!heroData.worst,
+      render:(W,H)=>{ const [[w,s],[e,n]]=heroData.worst.bounds; return mapSVG(W,H,boxProjection(W,H,[[w-3,s-2],[e+3,n+2]]),{labels:true,border:1}); },
+      title:()=>'Worst drought this week',
+      text:()=>'D4 Exceptional'+(heroData.worst.state?' centered on '+heroData.worst.state:'')
+    },
+    { // the tracked counties across the West
+      render:(W,H)=>mapSVG(W,H,boxProjection(W,H,[[-124.5,30],[-97,48.5]]),{labels:true,markers:5,border:1}),
+      title:()=>{ const n=COUNTY_GEO.filter(c=>c.dmIdx>=0).length; return n+' of '+COUNTY_GEO.length+' tracked counties in drought'; },
+      text:()=>{ const w=COUNTY_GEO.reduce((a,b)=>b.dmIdx>a.dmIdx?b:a); return w.dmIdx<0?'No tracked county is in drought this week':'Worst: '+w.name.replace(/ \(\w+\)$/,'')+' County, '+w.state+' · '+w.dm; }
+    }
+  ];
+  let activeSlides = [];
+
+  function setBadge(sl){
+    const badge=document.getElementById('heroBadge');
+    const fill=()=>{
+      badge.innerHTML='';
+      const strong=document.createElement('strong'); strong.textContent=sl.title();
+      badge.append(strong, document.createTextNode(sl.text()));
+      badge.classList.remove('swap');
+    };
+    if(badge.classList.contains('ready')){ badge.classList.add('swap'); setTimeout(fill, 300); }
+    else { fill(); badge.classList.add('ready'); }
+  }
+
+  function showSlide(i, user){
+    if(!activeSlides.length) return;
+    heroIdx = (i+activeSlides.length)%activeSlides.length;
+    document.querySelectorAll('#heroMap .hero-slide').forEach((el,k)=>el.classList.toggle('active', k===heroIdx));
+    document.querySelectorAll('#heroDots .hero-dot').forEach((el,k)=>el.setAttribute('aria-current', k===heroIdx));
+    setBadge(activeSlides[heroIdx]);
+    if(user) restartTimer();
+  }
+  function restartTimer(){
+    clearInterval(heroTimer);
+    if(window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    heroTimer = setInterval(()=>showSlide(heroIdx+1), SLIDE_MS);
+  }
+
   async function renderHeroMap(){
     const wrap = document.getElementById('heroMap');
     if(!wrap) return;
+    try { await heroBase(); } catch(err){ console.error('Map load error:', err); return; }
     const W = wrap.clientWidth || 600, H = wrap.clientHeight || 560;
-    let us;
-    try { us = usTopo || await loadAtlas(); usTopo = us; } catch(err){ console.error('Map load error:', err); return; }
-    const states = topojson.feature(us, us.objects.states);
-    states.features = states.features.filter(f=>FIPS_TO_ABBR[String(f.id).padStart(2,'0')]);
-    const pad = Math.max(16, W*0.04);
-    const proj = d3.geoAlbersUsa().fitExtent([[pad, pad+40],[W-pad, H-pad-70]], states);
-    const pathGen = d3.geoPath().projection(proj);
-    let html = `<svg width="100%" height="100%" viewBox="0 0 ${W} ${H}" aria-hidden="true" style="display:block">`;
-    html += `<path d="${pathGen(states)}" fill="rgba(120,150,180,0.08)"/>`;
-    loadDroughtFeatures().forEach(f=>{
-      const d = pathGen(f);
-      if(d) html += `<path d="${d}" fill="${dmColors[f.properties.DM]}" fill-opacity="0.66"/>`;
-    });
-    html += `<path d="${pathGen(topojson.mesh(us, us.objects.states))}" fill="none" stroke="rgba(200,220,240,0.32)" stroke-width="0.6"/>`;
-    if(!prFeature) prFeature = topojson.feature(us, us.objects.states).features.find(f=>String(f.id)==='72') || null;
-    const inset = prInset(pathGen, states.features.find(f=>String(f.id)==='12'), W, H);
-    if(inset){
-      const [[bx, by]] = inset.box;
-      html += `<rect x="${bx}" y="${by}" width="${inset.w}" height="${inset.h}" rx="4" fill="rgba(120,150,180,0.06)" stroke="rgba(200,220,240,0.3)" stroke-dasharray="3 3"/>`;
-      html += `<path d="${inset.pathGen(prFeature)}" fill="rgba(120,150,180,0.08)" stroke="rgba(200,220,240,0.32)" stroke-width="0.6"/>`;
-      loadDroughtFeatures().forEach(f=>{
-        const d = inset.pathGen(f);
-        if(d) html += `<path d="${d}" fill="${dmColors[f.properties.DM]}" fill-opacity="0.66"/>`;
+    activeSlides = SLIDES.filter(sl=>!(sl.skip && sl.skip()));
+    wrap.innerHTML = activeSlides.map((sl,k)=>`<div class="hero-slide${k===heroIdx?' active':''}">${
+      sl.img ? `<img src="${sl.img}" alt="${sl.alt||''}">` : sl.render(W,H)}</div>`).join('');
+    const dots = document.getElementById('heroDots');
+    if(dots.childElementCount !== activeSlides.length){
+      dots.innerHTML='';
+      activeSlides.forEach((sl,k)=>{
+        const b=document.createElement('button');
+        b.type='button'; b.className='hero-dot';
+        b.setAttribute('aria-label','Show slide '+(k+1)+': '+sl.title());
+        b.addEventListener('click',()=>showSlide(k,true));
+        dots.appendChild(b);
       });
-      html += `<text x="${bx+4}" y="${by+8}" font-family="Inter,sans-serif" font-size="8" font-weight="600" letter-spacing="0.06em" fill="rgba(160,185,210,0.7)">PR</text>`;
     }
-    COUNTY_GEO.forEach(c=>{
-      const pt = proj([c.lon, c.lat]);
-      if(pt) html += `<circle cx="${pt[0]}" cy="${pt[1]}" r="3" fill="#0b1219" stroke="${dmColor(c.dmIdx)}" stroke-width="1.4"/>`;
-    });
-    wrap.innerHTML = html + '</svg>';
+    showSlide(heroIdx);
   }
-  renderHeroMap();
+  renderHeroMap().then(restartTimer);
+  const heroCard=document.querySelector('.hero-visual');
+  heroCard.addEventListener('mouseenter',()=>clearInterval(heroTimer));
+  heroCard.addEventListener('mouseleave',restartTimer);
+  heroCard.addEventListener('focusin',()=>clearInterval(heroTimer));
+  heroCard.addEventListener('focusout',restartTimer);
   let heroResize=null;
   window.addEventListener('resize', ()=>{ clearTimeout(heroResize); heroResize=setTimeout(renderHeroMap, 200); });
-  document.getElementById('heroMap').addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openMap(); } });
-
-  // Hero badge: the most severe tracked county on the current USDM map
-  const worst = COUNTY_GEO.reduce((a,b)=>b.dmIdx>a.dmIdx?b:a);
-  const heroBadge = document.getElementById('heroBadge');
-  if(heroBadge){
-    heroBadge.innerHTML = '';
-    const strong = document.createElement('strong');
-    strong.textContent = worst.dmIdx<0 ? 'U.S. Drought Monitor' : worst.name.replace(/ \(\w+\)$/,'')+' County, '+worst.state;
-    heroBadge.appendChild(strong);
-    heroBadge.appendChild(document.createTextNode('USDM · Valid '+USDM_VALID+(worst.dmIdx<0?'':' · '+worst.dm)));
-  }
+  document.getElementById('heroMap').addEventListener('keydown', e=>{
+    if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openMap(); }
+    else if(e.key==='ArrowRight') showSlide(heroIdx+1,true);
+    else if(e.key==='ArrowLeft') showSlide(heroIdx-1,true);
+  });
 })();
 </script>
 </body>
