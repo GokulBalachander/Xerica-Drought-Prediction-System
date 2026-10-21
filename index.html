@@ -245,8 +245,9 @@ h1 em { font-style: normal; color: var(--gold-lt); }
 .map-canvas { width: 100%; height: 100%; position: relative; background: #0d1e2e; }
 #heroMap { position: absolute; inset: 0; cursor: pointer; }
 .hero-media { position: relative; z-index: 2; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.hero-slide { position: absolute; inset: 0; opacity: 0; transition: opacity 0.7s ease; }
-.hero-slide.active { opacity: 1; }
+/* fade-through: the old slide fades out fully before the new one fades in, so two maps never blend */
+.hero-slide { position: absolute; inset: 0; opacity: 0; transition: opacity 0.35s ease-in; }
+.hero-slide.active { opacity: 1; transition: opacity 0.5s ease-out 0.35s; }
 .hero-slide img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .map-badge { transition: opacity 0.35s; }
 .map-badge.swap { opacity: 0; }
