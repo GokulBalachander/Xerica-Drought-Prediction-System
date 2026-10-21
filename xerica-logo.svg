@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 32 32">
+  <!-- Xerica mark: half water, half the U.S. Drought Monitor D0–D4 scale -->
+  <defs><clipPath id="xericaDrop"><path d="M16 2.5C16 2.5 5.5 14 5.5 20.5a10.5 10.5 0 0 0 21 0C26.5 14 16 2.5 16 2.5Z"/></clipPath></defs>
+  <g clip-path="url(#xericaDrop)">
+    <rect x="0" y="0" width="15.4" height="32" fill="#3B9EE0"/>
+    <rect x="16.6" y="0" width="16" height="11.5" fill="#FFE14D"/>
+    <rect x="16.6" y="12.6" width="16" height="3.6" fill="#FCD37F"/>
+    <rect x="16.6" y="17.3" width="16" height="3.6" fill="#FFAA00"/>
+    <rect x="16.6" y="22" width="16" height="3.6" fill="#E60000"/>
+    <rect x="16.6" y="26.7" width="16" height="6" fill="#8A0A0A"/>
+  </g>
+</svg>
